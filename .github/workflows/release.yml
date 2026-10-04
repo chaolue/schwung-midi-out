@@ -1,14 +1,24 @@
 name: Release
 
-# Push a tag vX.Y.Z (matching src/module.json's version) to publish a release:
-# test, cross-compile, attach dist/midi-out-module.tar.gz, then point
-# release.json on the default branch at it -- the file Schwung Manager reads to
-# offer an install or update.
+# Publishes a release: test, cross-compile, attach dist/midi-out-module.tar.gz,
+# then point release.json on the default branch at it -- the file Schwung
+# Manager reads to offer an install or update.
+#
+# Two ways in, same steps after:
+#   - push a tag vX.Y.Z (matching src/module.json's version), or
+#   - Actions -> Release -> Run workflow on the default branch, with version
+#     X.Y.Z; the tag is created at the commit that was built and tested.
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.2.0 -- must match src/module.json; creates tag v<version>"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -20,15 +30,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify version match
+      - name: Resolve tag
+        id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            # release.json on the default branch must describe what was
+            # released, so a manual release is cut from there and nowhere else.
+            if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+              echo "::error::Run the release from ${DEFAULT_BRANCH}, not ${GITHUB_REF_NAME}."
+              exit 1
+            fi
+            TAG="v${INPUT_VERSION#v}"
+            # Never re-point a published version at different code.
+            if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null; then
+              echo "::error::${TAG} already exists. Bump src/module.json and release the new version."
+              exit 1
+            fi
+          else
+            TAG="$GITHUB_REF_NAME"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version match
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
           MODULE_VERSION=$(grep '"version"' src/module.json | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-          if [ "$TAG_VERSION" != "$MODULE_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) != src/module.json version ($MODULE_VERSION). Bump module.json before tagging."
+          if [ "$VERSION" != "$MODULE_VERSION" ]; then
+            echo "::error::Release version ($VERSION) != src/module.json version ($MODULE_VERSION). Bump module.json first."
             exit 1
           fi
-          echo "Version check passed: $TAG_VERSION"
+          echo "Version check passed: $VERSION"
 
       - name: Unit tests
         run: bash tests/run.sh
@@ -42,6 +78,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          # Only used when the tag does not exist yet (a manual run): tag the
+          # exact commit that was just tested and built.
+          target_commitish: ${{ github.sha }}
           files: dist/midi-out-module.tar.gz
           # A release without its tarball is not a release; without this a
           # missing file would publish one silently.
@@ -55,11 +95,14 @@ jobs:
       - name: Update release.json
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/midi-out-module.tar.gz"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/midi-out-module.tar.gz"
+          # FETCH_HEAD, not origin/<branch>: a tag-triggered checkout is a
+          # detached HEAD with no local branch and no tracking ref to resolve.
           git fetch origin "$DEFAULT_BRANCH"
-          git checkout -f "$DEFAULT_BRANCH"
+          git checkout -f -B "$DEFAULT_BRANCH" FETCH_HEAD
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -71,12 +114,12 @@ jobs:
           EOF
 
           git add release.json
-          git commit -m "chore: update release.json for ${GITHUB_REF_NAME}" || echo "No changes"
+          git commit -m "chore: update release.json for ${TAG}" || echo "No changes"
           # One retry covers the branch moving under us; branch protection
           # (GH006) is what the error below is for.
           if ! git push origin "$DEFAULT_BRANCH"; then
             if ! { git pull --rebase origin "$DEFAULT_BRANCH" && git push origin "$DEFAULT_BRANCH"; }; then
-              echo "::error title=release.json not updated::${GITHUB_REF_NAME} is published, but release.json on ${DEFAULT_BRANCH} still names the previous version, so Schwung Manager will not offer it. Commit release.json with version ${VERSION} and download_url ${URL} to ${DEFAULT_BRANCH}."
+              echo "::error title=release.json not updated::${TAG} is published, but release.json on ${DEFAULT_BRANCH} still names the previous version, so Schwung Manager will not offer it. Commit release.json with version ${VERSION} and download_url ${URL} to ${DEFAULT_BRANCH}."
               exit 1
             fi
           fi

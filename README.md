@@ -74,12 +74,14 @@ skips Docker. The build checks that `dsp.so` is AArch64 and exports
 ## Releasing
 
 1. Bump `version` in `src/module.json` and commit to `main`.
-2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+2. Either push a tag — `git tag v0.2.0 && git push origin v0.2.0` — or open
+   **Actions → Release → Run workflow** on `main` and enter `0.2.0`, which
+   creates the tag at the commit it builds.
 
-`.github/workflows/release.yml` refuses a tag that does not match
-`module.json`, runs the tests, cross-compiles, attaches the tarball to a GitHub
-release, and updates `release.json` on `main` — the file Schwung Manager reads
-to offer the update. `ci.yml` runs the tests and the build on every push and
+`.github/workflows/release.yml` refuses a version that does not match
+`module.json` (and, run by hand, one that is already tagged), runs the tests,
+cross-compiles, attaches the tarball to a GitHub release, and updates
+`release.json` on `main` — the file Schwung Manager reads to offer the update. `ci.yml` runs the tests and the build on every push and
 pull request, and keeps the tarball as a workflow artifact.
 
 ### Catalog entry
