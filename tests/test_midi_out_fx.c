@@ -47,6 +47,20 @@ static void play(void *inst, uint8_t s, uint8_t d1, uint8_t d2) {
     run(inst, s, d1, d2, 3, out, lens);
 }
 
+/* Returns how many messages continued down the chain, and fails the test if a
+ * message that continued was altered: Thru promises UNCHANGED. */
+static int passes(void *inst, uint8_t s, uint8_t d1, uint8_t d2, int len) {
+    uint8_t out[MIDI_FX_MAX_OUT_MSGS][3];
+    int lens[MIDI_FX_MAX_OUT_MSGS];
+    int n = run(inst, s, d1, d2, len, out, lens);
+    if (n == 1 && (lens[0] != len || out[0][0] != s ||
+                   (len > 1 && out[0][1] != d1) || (len > 2 && out[0][2] != d2))) {
+        fprintf(stderr, "FAIL: %02x %02x %02x was changed on its way down the chain\n", s, d1, d2);
+        failures++;
+    }
+    return n;
+}
+
 static void tick(void *inst) {
     uint8_t out[MIDI_FX_MAX_OUT_MSGS][3];
     int lens[MIDI_FX_MAX_OUT_MSGS];
@@ -205,12 +219,94 @@ int main(void) {
     /* --- state round trip ----------------------------------------------- */
     api->set_param(inst, "channel", "7");
     api->get_param(inst, "state", buf, sizeof(buf));
-    CHECK(strcmp(buf, "{\"channel\":7}") == 0, "state is %s", buf);
+    CHECK(strcmp(buf, "{\"channel\":7,\"thru\":\"On\"}") == 0, "state is %s", buf);
     void *other = api->create_instance(".", NULL);
     api->set_param(other, "state", buf);
     api->get_param(other, "channel", buf, sizeof(buf));
     CHECK(strcmp(buf, "7") == 0, "state did not restore the channel (%s)", buf);
     api->destroy_instance(other);
+
+    /* --- Thru: on by default, and Off withholds only what it should ------ */
+    {
+        void *t = api->create_instance(".", NULL);
+        api->get_param(t, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "On") == 0, "default thru is '%s', want On", buf);
+        CHECK(api->get_param(t, "chain_params", buf, sizeof(buf)) > 0 &&
+              strstr(buf, "\"key\":\"thru\"") && strstr(buf, "\"options\":[\"Off\",\"On\"]"),
+              "chain_params does not declare thru as an Off/On enum: %s", buf);
+
+        api->set_param(t, "channel", "3");
+        reset_capture();
+        CHECK(passes(t, 0x90, 60, 100, 3) == 1, "Thru On did not pass a note-on");
+        CHECK(sent_n == 1 && pkt_is(0, 0x29, 0x92, 60, 100), "Thru On stopped the external send");
+        passes(t, 0x90, 62, 90, 3);             /* held into Thru Off */
+        passes(t, 0xB0, 64, 127, 3);            /* pedal held into Thru Off */
+
+        api->set_param(t, "thru", "Off");
+        api->get_param(t, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "Off") == 0, "thru reads '%s' after Off", buf);
+
+        reset_capture();
+        CHECK(passes(t, 0x90, 64, 100, 3) == 0, "Thru Off passed a note-on to the synth");
+        CHECK(sent_n == 1 && pkt_is(0, 0x29, 0x92, 64, 100), "Thru Off stopped the external send");
+        CHECK(passes(t, 0xB0, 74, 10, 3) == 0, "Thru Off passed a CC to the synth");
+        CHECK(passes(t, 0xE0, 0x00, 0x40, 3) == 0, "Thru Off passed pitch bend to the synth");
+        CHECK(passes(t, 0xF8, 0, 0, 1) == 1, "Thru Off blocked clock: a synth after it loses tempo");
+        CHECK(passes(t, 0xFC, 0, 0, 1) == 1, "Thru Off blocked Stop");
+
+        /* Owed: these reached the synth with Thru On. */
+        CHECK(passes(t, 0x80, 60, 0, 3) == 1,
+              "a note held when Thru went off never got its note-off: stuck on the slot's synth");
+        CHECK(passes(t, 0x90, 62, 0, 3) == 1, "an owed velocity-0 release was withheld");
+        CHECK(passes(t, 0xB0, 64, 0, 3) == 1,
+              "a pedal held when Thru went off never came up on the slot's synth");
+        /* Not owed, or already paid. */
+        CHECK(passes(t, 0x80, 64, 0, 3) == 0, "a release for a note the synth never got passed anyway");
+        CHECK(passes(t, 0x80, 60, 0, 3) == 0, "an owed note-off passed twice");
+        CHECK(passes(t, 0xB0, 64, 0, 3) == 0, "an owed pedal-up passed twice");
+
+        /* All-notes-off settles a debt on its channel, and only then passes. */
+        api->set_param(t, "thru", "1");
+        passes(t, 0x91, 50, 100, 3);
+        api->set_param(t, "thru", "0");
+        CHECK(passes(t, 0xB1, 123, 0, 3) == 1, "all-notes-off withheld while the synth still held a note");
+        CHECK(passes(t, 0x81, 50, 0, 3) == 0, "all-notes-off did not settle what was owed");
+        CHECK(passes(t, 0xB1, 123, 0, 3) == 0, "all-notes-off passed with nothing owed");
+
+        /* Parsing: names either case, the option index, a knob-style float. */
+        api->set_param(t, "thru", "On");     api->get_param(t, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "On") == 0, "'On' gave %s", buf);
+        api->set_param(t, "thru", "off");    api->get_param(t, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "Off") == 0, "'off' gave %s", buf);
+        api->set_param(t, "thru", "1.000");  api->get_param(t, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "On") == 0, "'1.000' gave %s", buf);
+        api->set_param(t, "thru", "maybe");  api->get_param(t, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "On") == 0, "a nonsense write moved Thru (%s)", buf);
+        api->set_param(t, "thru", "");       api->get_param(t, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "On") == 0, "an empty write moved Thru (%s)", buf);
+
+        /* State carries Thru; a 0.1.0 state (no thru field) restores On. */
+        api->set_param(t, "channel", "9");
+        api->set_param(t, "thru", "Off");
+        api->get_param(t, "state", buf, sizeof(buf));
+        CHECK(strcmp(buf, "{\"channel\":9,\"thru\":\"Off\"}") == 0, "state is %s", buf);
+        void *t2 = api->create_instance(".", NULL);
+        api->set_param(t2, "state", buf);
+        api->get_param(t2, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "Off") == 0, "state did not restore Thru Off (%s)", buf);
+        api->get_param(t2, "channel", buf, sizeof(buf));
+        CHECK(strcmp(buf, "9") == 0, "state with thru did not restore the channel (%s)", buf);
+        void *t3 = api->create_instance(".", NULL);
+        api->set_param(t3, "state", "{\"channel\":4}");
+        api->get_param(t3, "thru", buf, sizeof(buf));
+        CHECK(strcmp(buf, "On") == 0, "a 0.1.0 state restored Thru as %s, not On", buf);
+        api->get_param(t3, "channel", buf, sizeof(buf));
+        CHECK(strcmp(buf, "4") == 0, "a 0.1.0 state lost its channel (%s)", buf);
+
+        api->destroy_instance(t3);
+        api->destroy_instance(t2);
+        api->destroy_instance(t);
+    }
 
     /* --- queue full: a release evicts a note-on, never the other way ---- */
     reset_capture();

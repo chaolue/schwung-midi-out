@@ -16,14 +16,14 @@
         "or Arp produce is",
         "what goes out.",
         "",
-        "Everything also",
-        "passes on down the",
-        "chain unchanged, so",
+        "With Thru on, all of",
+        "it also passes on",
+        "down the chain, so",
         "a synth after it",
-        "still plays. Leave",
-        "the synth empty to",
-        "play only the",
-        "external one."
+        "still plays. Turn",
+        "Thru off to play",
+        "only the external",
+        "one."
       ]
     },
     {
@@ -43,6 +43,30 @@
         "they still release",
         "on the channel they",
         "started on."
+      ]
+    },
+    {
+      "title": "Thru",
+      "lines": [
+        "Knob 2: Thru",
+        " On (default) or Off",
+        "",
+        "On: MIDI also goes",
+        "on, unchanged, to",
+        "the slot's synth and",
+        "any MIDI FX after",
+        "this one.",
+        "",
+        "Off: notes, CCs and",
+        "bend go only out of",
+        "USB-A.",
+        "",
+        "Clock still passes,",
+        "so tempo sync keeps",
+        "working. Notes held",
+        "when you turn it off",
+        "still release on the",
+        "slot's synth."
       ]
     },
     {
@@ -70,8 +94,8 @@
         "",
         "If the external",
         "synth echoes MIDI",
-        "back in, turn its",
-        "MIDI thru off."
+        "back in, turn off",
+        "its own MIDI thru."
       ]
     }
   ]

@@ -2,7 +2,7 @@
   "id": "midi-out",
   "name": "MIDI Out",
   "abbrev": "MO",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sends the slot's MIDI, after any MIDI FX before it, out of the USB-A port on one channel",
   "author": "chaolue",
   "license": "MIT",
@@ -24,9 +24,18 @@
               "max": 16,
               "default": 1,
               "step": 1
+            },
+            {
+              "key": "thru",
+              "short_name": "Thru",
+              "name": "Pass Thru",
+              "type": "enum",
+              "options": ["Off", "On"],
+              "options_as_string": true,
+              "default": 1
             }
           ],
-          "knobs": ["channel"]
+          "knobs": ["channel", "thru"]
         }
       }
     }

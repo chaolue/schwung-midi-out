@@ -6,9 +6,9 @@ external synth or any class-compliant MIDI device.
 
 Put it after other MIDI FX in a slot and what they produce — played notes,
 chords, arpeggiator steps, CCs, pitch bend, aftertouch, program changes — goes
-out on the one channel you pick. Everything also passes down the chain
-unchanged, so a synth after it keeps playing. Leave the slot's synth empty to
-play only the external one.
+out on the one channel you pick. With **Thru** on (the default) everything
+also passes down the chain unchanged, so the slot's synth keeps playing; turn
+Thru off to play only the external one.
 
 ## Prerequisites
 
@@ -21,8 +21,23 @@ play only the external one.
 | Knob | Parameter | Range |
 |------|-----------|-------|
 | 1 | MIDI Channel | 1–16 (default 1) |
+| 2 | Thru | On (default) / Off |
 
-Every message goes out on this channel, whatever channel it arrived on.
+Every message goes out on the MIDI Channel, whatever channel it arrived on.
+
+**Thru On** also passes every message on, unchanged and on its original
+channel, to the slot's synth and any MIDI FX after this one. **Thru Off** sends
+notes, CCs, bend, aftertouch and program changes only out of USB-A. Two things
+still pass with Thru off:
+
+- **Clock, start and stop**, so a synth after this module keeps tempo. They are
+  never sent out of USB-A, so blocking them would drop them altogether.
+- **Releases the slot's synth is owed.** A note or sustain pedal that reached it
+  while Thru was on still gets its note-off or pedal-up, so turning Thru off
+  with keys held does not leave the synth sounding.
+
+A slot saved with 0.1.0 has no Thru setting and comes back with Thru on, which
+is how 0.1.0 always behaved.
 
 ## Behaviour worth knowing
 

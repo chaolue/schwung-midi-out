@@ -3,10 +3,17 @@
  *
  * Put it after any other MIDI FX in a slot and everything those produce —
  * played notes, chords, arpeggiator steps, CCs, bend — goes out of the
- * external MIDI port on one channel the user picks. It is a TAP, not a sink:
- * every message is also passed down the chain unchanged, so a synth (or a
- * further MIDI FX) after it keeps playing. A user who wants only the external
- * synth leaves the slot's synth empty.
+ * external MIDI port on one channel the user picks.
+ *
+ * THRU (default On) decides whether it is a TAP or a SINK. On, every message
+ * also continues down the chain unchanged, so a synth (or a further MIDI FX)
+ * after it keeps playing. Off, what goes out of USB-A stops here, so only the
+ * external synth plays — except what the slot's synth is still OWED: the
+ * release of a note or sustain pedal that reached it while Thru was on.
+ * Without that, switching Thru off with a key held would leave the slot's
+ * synth sounding the note forever. System messages pass either way: they are
+ * never sent out of USB-A, so blocking them would drop them entirely, and
+ * clock is how a synth after this module keeps tempo.
  *
  * Because process_midi() is called for every message that leaves the stage
  * before it — including what an upstream arpeggiator generates from tick(),
@@ -61,6 +68,7 @@
  * header copy moves it, the build fails instead of the device.
  */
 
+#include <ctype.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -89,6 +97,13 @@ static mo_send_fn g_send_external = NULL;
 
 typedef struct {
     int     channel;                 /* 0-15; shown and stored as 1-16 */
+    int     thru;                    /* 1: also pass down the chain (default) */
+
+    /* What went down the chain while Thru was on and has not been released
+     * yet, per INPUT channel and pitch: the releases Thru Off must still let
+     * through. Input channel, because pass-through is unchanged. */
+    uint8_t thru_refs[16][128];
+    uint16_t thru_sustain;           /* bit per input channel, pedal passed down */
 
     /* Note-ons sent minus note-offs sent, per output channel and pitch. A
      * release is routed to the channel its note-on went to, so a channel
@@ -107,7 +122,10 @@ typedef struct {
 static const char CHAIN_PARAMS_JSON[] =
     "["
     "{\"key\":\"channel\",\"name\":\"MIDI Channel\",\"short_name\":\"Chan\","
-      "\"type\":\"int\",\"min\":1,\"max\":16,\"step\":1,\"default\":1}"
+      "\"type\":\"int\",\"min\":1,\"max\":16,\"step\":1,\"default\":1},"
+    "{\"key\":\"thru\",\"name\":\"Pass Thru\",\"short_name\":\"Thru\","
+      "\"type\":\"enum\",\"options\":[\"Off\",\"On\"],\"options_as_string\":true,"
+      "\"default\":1}"
     "]";
 
 /* ---- Queue --------------------------------------------------------------- */
@@ -236,6 +254,56 @@ static void mo_release_all(midi_out_t *m) {
     m->sustain_down = 0;
 }
 
+/* ---- Thru ---------------------------------------------------------------- */
+
+/* Does this message continue down the chain? See the THRU note at the top. */
+static int mo_thru_passes(midi_out_t *m, const uint8_t *msg, int len) {
+    uint8_t status = msg[0];
+    if (status < 0x80 || status >= 0xF0) return 1;      /* system: always */
+    if (len < 3 || (msg[1] & 0x80)) return m->thru;      /* nothing to track */
+
+    uint8_t type = status & 0xF0, ch = status & 0x0F;
+    uint8_t d1 = msg[1], d2 = msg[2];
+    uint16_t bit = (uint16_t)(1u << ch);
+    int note_on  = (type == 0x90 && d2 > 0);
+    int note_off = (type == 0x80 || (type == 0x90 && d2 == 0));
+    int sustain  = (type == 0xB0 && d1 == MO_CC_SUSTAIN);
+    int all_off  = (type == 0xB0 && (d1 == 120 || d1 == 123));
+
+    if (m->thru) {
+        if (note_on) {
+            if (m->thru_refs[ch][d1] < 255) m->thru_refs[ch][d1]++;
+        } else if (note_off) {
+            if (m->thru_refs[ch][d1] > 0) m->thru_refs[ch][d1]--;
+        } else if (sustain) {
+            if (d2 >= 64) m->thru_sustain |= bit;
+            else          m->thru_sustain &= (uint16_t)~bit;
+        } else if (all_off) {
+            memset(m->thru_refs[ch], 0, sizeof(m->thru_refs[ch]));
+        }
+        return 1;
+    }
+
+    /* Thru off: only what the slot's synth is owed. */
+    if (note_off && m->thru_refs[ch][d1] > 0) {
+        m->thru_refs[ch][d1]--;
+        return 1;
+    }
+    if (sustain && d2 < 64 && (m->thru_sustain & bit)) {
+        m->thru_sustain &= (uint16_t)~bit;
+        return 1;
+    }
+    if (all_off) {
+        int owed = 0;
+        for (int n = 0; n < 128 && !owed; n++) owed = m->thru_refs[ch][n] > 0;
+        if (owed) {
+            memset(m->thru_refs[ch], 0, sizeof(m->thru_refs[ch]));
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---- Params -------------------------------------------------------------- */
 
 /* Accepts "5", "5.0" or "5.000000" (a knob write). Returns 0-15, or -1 when the
@@ -252,17 +320,42 @@ static int mo_parse_channel(const char *val) {
     return c - 1;
 }
 
-/* {"channel":N} — the only field. Hand-rolled like the other built-ins: there
- * is no JSON library on this path and nothing here may allocate. */
-static int mo_state_channel(const char *json) {
-    if (!json) return -1;
-    const char *k = strstr(json, "\"channel\"");
-    if (!k) return -1;
-    const char *colon = strchr(k + 9, ':');
-    if (!colon) return -1;
+/* "On"/"Off" (what get_param reports), the option index "1"/"0", or a
+ * knob-style "1.000". Reads only the leading word, so it also parses a value
+ * inside the state JSON. Anything else is -1: the setting is left alone. */
+static int mo_parse_thru(const char *val) {
+    if (!val) return -1;
+    char w[8];
+    size_t n = 0;
+    while (n + 1 < sizeof(w) && (isalnum((unsigned char)val[n]) || val[n] == '.')) {
+        w[n] = (char)tolower((unsigned char)val[n]);
+        n++;
+    }
+    w[n] = '\0';
+    if (strcmp(w, "on") == 0 || strcmp(w, "true") == 0) return 1;
+    if (strcmp(w, "off") == 0 || strcmp(w, "false") == 0) return 0;
+    char *end = NULL;
+    double d = strtod(w, &end);
+    if (n == 0 || end == w || *end) return -1;
+    return d >= 0.5 ? 1 : 0;
+}
+
+/* Where a field's value starts in {"channel":N,"thru":"On"}, or NULL.
+ * Hand-rolled like the other built-ins: there is no JSON library on this path
+ * and nothing here may allocate. A field that is absent leaves its setting
+ * alone, so a 0.1.0 state (channel only) restores with Thru at its default. */
+static const char *mo_state_value(const char *json, const char *key) {
+    if (!json) return NULL;
+    char pat[16];
+    int n = snprintf(pat, sizeof(pat), "\"%s\"", key);
+    if (n <= 0 || n >= (int)sizeof(pat)) return NULL;
+    const char *k = strstr(json, pat);
+    if (!k) return NULL;
+    const char *colon = strchr(k + n, ':');
+    if (!colon) return NULL;
     colon++;
     while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
-    return mo_parse_channel(colon);
+    return colon;
 }
 
 /* ---- API ----------------------------------------------------------------- */
@@ -272,6 +365,7 @@ static void *mo_create_instance(const char *module_dir, const char *config_json)
     midi_out_t *m = (midi_out_t *)calloc(1, sizeof(midi_out_t));
     if (!m) return NULL;
     m->channel = 0;   /* channel 1 */
+    m->thru = 1;      /* the 0.1.0 behaviour, and what a saved 0.1.0 slot expects */
     return m;
 }
 
@@ -294,8 +388,9 @@ static int mo_process_midi(void *instance,
 
     mo_forward(m, in_msg, in_len);
 
-    /* Pass everything through unchanged, on its original channel, so the rest
-     * of the slot behaves as if this module were not there. */
+    /* What passes, passes unchanged, on its original channel: with Thru on the
+     * rest of the slot behaves as if this module were not there. */
+    if (!mo_thru_passes(m, in_msg, in_len)) return 0;
     if (max_out < 1 || in_len > 3) return 0;
     out_msgs[0][0] = in_msg[0];
     out_msgs[0][1] = in_len > 1 ? in_msg[1] : 0;
@@ -316,10 +411,18 @@ static void mo_set_param(void *instance, const char *key, const char *val) {
     midi_out_t *m = (midi_out_t *)instance;
     if (!m || !key || !val) return;
 
-    int c = -1;
-    if (strcmp(key, "channel") == 0) c = mo_parse_channel(val);
-    else if (strcmp(key, "state") == 0) c = mo_state_channel(val);
-    if (c >= 0) m->channel = c;
+    if (strcmp(key, "channel") == 0) {
+        int c = mo_parse_channel(val);
+        if (c >= 0) m->channel = c;
+    } else if (strcmp(key, "thru") == 0) {
+        int t = mo_parse_thru(val);
+        if (t >= 0) m->thru = t;
+    } else if (strcmp(key, "state") == 0) {
+        int c = mo_parse_channel(mo_state_value(val, "channel"));
+        int t = mo_parse_thru(mo_state_value(val, "thru"));
+        if (c >= 0) m->channel = c;
+        if (t >= 0) m->thru = t;
+    }
 }
 
 static int mo_get_param(void *instance, const char *key, char *buf, int buf_len) {
@@ -329,8 +432,12 @@ static int mo_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "channel") == 0) {
         return snprintf(buf, buf_len, "%d", m->channel + 1);
     }
+    if (strcmp(key, "thru") == 0) {
+        return snprintf(buf, buf_len, "%s", m->thru ? "On" : "Off");
+    }
     if (strcmp(key, "state") == 0) {
-        return snprintf(buf, buf_len, "{\"channel\":%d}", m->channel + 1);
+        return snprintf(buf, buf_len, "{\"channel\":%d,\"thru\":\"%s\"}",
+                        m->channel + 1, m->thru ? "On" : "Off");
     }
     if (strcmp(key, "dropped") == 0) {
         return snprintf(buf, buf_len, "%d", m->dropped);
