@@ -1,0 +1,78 @@
+{
+  "title": "MIDI Out",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Sends this slot's",
+        "MIDI out of the",
+        "USB-A port, to an",
+        "external synth or",
+        "any class-compliant",
+        "MIDI device.",
+        "",
+        "Put it after other",
+        "MIDI FX: what Chord",
+        "or Arp produce is",
+        "what goes out.",
+        "",
+        "Everything also",
+        "passes on down the",
+        "chain unchanged, so",
+        "a synth after it",
+        "still plays. Leave",
+        "the synth empty to",
+        "play only the",
+        "external one."
+      ]
+    },
+    {
+      "title": "Channel",
+      "lines": [
+        "Knob 1: MIDI Channel",
+        " 1 to 16",
+        "",
+        "Every note, CC, bend",
+        "and aftertouch goes",
+        "out on this channel,",
+        "whatever channel it",
+        "came in on.",
+        "",
+        "Change it while",
+        "holding notes and",
+        "they still release",
+        "on the channel they",
+        "started on."
+      ]
+    },
+    {
+      "title": "Tips",
+      "lines": [
+        "Clock is not sent -",
+        "turn on Move's own",
+        "MIDI Clock Out for",
+        "tempo sync.",
+        "",
+        "Move's tracks can",
+        "send MIDI out of",
+        "USB-A too. Pick a",
+        "channel they do not",
+        "use, or the synth",
+        "hears both.",
+        "",
+        "Leave the slot's",
+        "MIDI FX setting on",
+        "Schw. Schw+Move",
+        "also sends notes to",
+        "Move, which echoes",
+        "them to USB-A, so",
+        "they double.",
+        "",
+        "If the external",
+        "synth echoes MIDI",
+        "back in, turn its",
+        "MIDI thru off."
+      ]
+    }
+  ]
+}

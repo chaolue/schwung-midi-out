@@ -1,0 +1,34 @@
+{
+  "id": "midi-out",
+  "name": "MIDI Out",
+  "abbrev": "MO",
+  "version": "0.1.0",
+  "description": "Sends the slot's MIDI, after any MIDI FX before it, out of the USB-A port on one channel",
+  "author": "chaolue",
+  "license": "MIT",
+  "component_type": "midi_fx",
+  "capabilities": {
+    "chainable": true,
+    "component_type": "midi_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "MIDI Out",
+          "params": [
+            {
+              "key": "channel",
+              "short_name": "Chan",
+              "name": "MIDI Channel",
+              "type": "int",
+              "min": 1,
+              "max": 16,
+              "default": 1,
+              "step": 1
+            }
+          ],
+          "knobs": ["channel"]
+        }
+      }
+    }
+  }
+}

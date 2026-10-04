@@ -1,0 +1,35 @@
+name: CI
+
+# Every push and PR runs the same two gates the release does -- the native unit
+# tests and the aarch64 build -- so a tag is never the first time either runs.
+# The built tarball is kept as a workflow artifact for trying a branch on a
+# device without cutting a release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: bash tests/run.sh
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross-compile for Move (aarch64)
+        run: |
+          docker build -t module-builder -f scripts/Dockerfile .
+          docker run --rm -v "$PWD:/build" -w /build module-builder bash ./scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: midi-out-module
+          path: dist/midi-out-module.tar.gz
+          if-no-files-found: error
